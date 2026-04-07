@@ -1,8 +1,9 @@
 import java.util.*;
+import java.io.*;
 
 public class MiniSqlParser {
 
-  // ===== Token =====
+  // tokens
   enum TokenType {
     IDENT, NUMBER, STRING,
     SELECT, FROM, WHERE, AND, OR, NOT, BETWEEN,
@@ -18,13 +19,13 @@ public class MiniSqlParser {
     public String toString() { return type + "(" + lexeme + ")"; }
   }
 
-  // ===== AST =====
+  // ===== Part A: AST nodes =====
   interface AstNode { void print(String indent); }
 
   static class QueryNode implements AstNode {
     final AstNode selectList;
     final AstNode fromList;
-    final AstNode where; // may be null
+    final AstNode where; // null if no WHERE clause
     QueryNode(AstNode s, AstNode f, AstNode w) { selectList=s; fromList=f; where=w; }
     public void print(String indent) {
       System.out.println(indent + "QUERY");
@@ -37,11 +38,9 @@ public class MiniSqlParser {
     }
   }
 
-  // ===== AST Nodes =====
-
   static class SelectListNode implements AstNode {
     final boolean star;
-    final List<AstNode> attrs; // empty when star == true
+    final List<AstNode> attrs;
     SelectListNode(boolean star, List<AstNode> attrs) { this.star = star; this.attrs = attrs; }
     public void print(String indent) {
       System.out.println(indent + "SELECT_LIST");
@@ -64,15 +63,17 @@ public class MiniSqlParser {
 
   static class TableNode implements AstNode {
     final String name;
-    final String alias; // may be null
+    final String alias; // optional
     TableNode(String name, String alias) { this.name = name; this.alias = alias; }
     public void print(String indent) {
-      System.out.println(indent + "TABLE(" + name + (alias != null ? " " + alias : "") + ")");
+      String s = alias != null ? " " + alias : "";
+      System.out.println(indent + "TABLE(" + name + s + ")");
     }
   }
 
+  // qualifier is for E.name style, null if unqualified
   static class AttrNode implements AstNode {
-    final String qualifier; // may be null
+    final String qualifier;
     final String name;
     AttrNode(String qualifier, String name) { this.qualifier = qualifier; this.name = name; }
     public void print(String indent) {
@@ -98,9 +99,10 @@ public class MiniSqlParser {
     final AstNode left, right;
     CompareNode(String op, AstNode left, AstNode right) { this.op = op; this.left = left; this.right = right; }
     public void print(String indent) {
+      String tmp = indent + "  ";
       System.out.println(indent + "CMP(" + op + ")");
-      left.print(indent + "  ");
-      right.print(indent + "  ");
+      left.print(tmp);
+      right.print(tmp);
     }
   }
 
@@ -144,34 +146,38 @@ public class MiniSqlParser {
     }
   }
 
-  // ===== Lexer =====
+  // ===== Part B: Lexer =====
   static List<Token> tokenize(String sql) {
-    List<Token> tokens = new ArrayList<>();
+    List<Token> tok = new ArrayList<>();
     int i = 0, n = sql.length();
 
     while (i < n) {
       char c = sql.charAt(i);
 
-      // whitespace
       if (Character.isWhitespace(c)) { i++; continue; }
 
-      // string literal '...' with '' as escaped quote
+      // single-quoted string, '' inside counts as escaped quote
       if (c == '\'') {
         StringBuilder sb = new StringBuilder();
-        i++; // skip opening quote
+        int start = i;
+        i++;
+        boolean closed = false;
         while (i < n) {
-          if (sql.charAt(i) == '\'') {
+          char cur = sql.charAt(i);
+          if (cur == '\'') {
             if (i + 1 < n && sql.charAt(i + 1) == '\'') { sb.append('\''); i += 2; }
-            else { i++; break; } // closing quote
+            else { i++; closed = true; break; }
           } else {
-            sb.append(sql.charAt(i++));
+            sb.append(cur);
+            i++;
           }
         }
-        tokens.add(new Token(TokenType.STRING, sb.toString()));
+        if (!closed) throw new RuntimeException("Unterminated string literal at position " + start);
+        tok.add(new Token(TokenType.STRING, sb.toString()));
         continue;
       }
 
-      // number: 123, 3.5, .5
+      // numbers: handles 123, 3.5, and .5
       if (Character.isDigit(c) || (c == '.' && i + 1 < n && Character.isDigit(sql.charAt(i + 1)))) {
         int start = i;
         while (i < n && Character.isDigit(sql.charAt(i))) i++;
@@ -179,56 +185,57 @@ public class MiniSqlParser {
           i++;
           while (i < n && Character.isDigit(sql.charAt(i))) i++;
         }
-        tokens.add(new Token(TokenType.NUMBER, sql.substring(start, i)));
+        String numStr = sql.substring(start, i);
+        if (numStr.length() > 0) {
+          tok.add(new Token(TokenType.NUMBER, numStr));
+        }
         continue;
       }
 
-      // identifier or keyword (case-insensitive keyword match)
       if (Character.isLetter(c) || c == '_') {
         int start = i;
         while (i < n && (Character.isLetterOrDigit(sql.charAt(i)) || sql.charAt(i) == '_')) i++;
         String word = sql.substring(start, i);
-        String upper = word.toUpperCase();
+        String kw = word.toUpperCase();
         TokenType type;
-        if      (upper.equals("SELECT"))  type = TokenType.SELECT;
-        else if (upper.equals("FROM"))    type = TokenType.FROM;
-        else if (upper.equals("WHERE"))   type = TokenType.WHERE;
-        else if (upper.equals("AND"))     type = TokenType.AND;
-        else if (upper.equals("OR"))      type = TokenType.OR;
-        else if (upper.equals("NOT"))     type = TokenType.NOT;
-        else if (upper.equals("BETWEEN")) type = TokenType.BETWEEN;
-        else                              type = TokenType.IDENT;
-        tokens.add(new Token(type, word));
+        if      (kw.equals("SELECT"))  type = TokenType.SELECT;
+        else if (kw.equals("FROM"))    type = TokenType.FROM;
+        else if (kw.equals("WHERE"))   type = TokenType.WHERE;
+        else if (kw.equals("AND"))     type = TokenType.AND;
+        else if (kw.equals("OR"))      type = TokenType.OR;
+        else if (kw.equals("NOT"))     type = TokenType.NOT;
+        else if (kw.equals("BETWEEN")) type = TokenType.BETWEEN;
+        else                           type = TokenType.IDENT;
+        tok.add(new Token(type, word));
         continue;
       }
 
-      // two-character operators
+      // check 2-char ops first so "<=" doesn't get split into "<" and "="
       if (i + 1 < n) {
         String two = sql.substring(i, i + 2);
-        if (two.equals("!=") || two.equals("<>")) { tokens.add(new Token(TokenType.NE, two)); i += 2; continue; }
-        if (two.equals("<="))                      { tokens.add(new Token(TokenType.LE, two)); i += 2; continue; }
-        if (two.equals(">="))                      { tokens.add(new Token(TokenType.GE, two)); i += 2; continue; }
+        if (two.equals("!=") || two.equals("<>")) { tok.add(new Token(TokenType.NE, two)); i += 2; continue; }
+        if (two.equals("<="))                      { tok.add(new Token(TokenType.LE, two)); i += 2; continue; }
+        if (two.equals(">="))                      { tok.add(new Token(TokenType.GE, two)); i += 2; continue; }
       }
 
-      // single-character tokens
-      if      (c == '=') { tokens.add(new Token(TokenType.EQ,     "=")); i++; continue; }
-      else if (c == '<') { tokens.add(new Token(TokenType.LT,     "<")); i++; continue; }
-      else if (c == '>') { tokens.add(new Token(TokenType.GT,     ">")); i++; continue; }
-      else if (c == ',') { tokens.add(new Token(TokenType.COMMA,  ",")); i++; continue; }
-      else if (c == '.') { tokens.add(new Token(TokenType.DOT,    ".")); i++; continue; }
-      else if (c == '(') { tokens.add(new Token(TokenType.LPAREN, "(")); i++; continue; }
-      else if (c == ')') { tokens.add(new Token(TokenType.RPAREN, ")")); i++; continue; }
-      else if (c == '*') { tokens.add(new Token(TokenType.STAR,   "*")); i++; continue; }
-      else if (c == ';') { tokens.add(new Token(TokenType.SEMI,   ";")); i++; continue; }
+      if      (c == '=') { tok.add(new Token(TokenType.EQ,     "=")); i++; continue; }
+      else if (c == '<') { tok.add(new Token(TokenType.LT,     "<")); i++; continue; }
+      else if (c == '>') { tok.add(new Token(TokenType.GT,     ">")); i++; continue; }
+      else if (c == ',') { tok.add(new Token(TokenType.COMMA,  ",")); i++; continue; }
+      else if (c == '.') { tok.add(new Token(TokenType.DOT,    ".")); i++; continue; }
+      else if (c == '(') { tok.add(new Token(TokenType.LPAREN, "(")); i++; continue; }
+      else if (c == ')') { tok.add(new Token(TokenType.RPAREN, ")")); i++; continue; }
+      else if (c == '*') { tok.add(new Token(TokenType.STAR,   "*")); i++; continue; }
+      else if (c == ';') { tok.add(new Token(TokenType.SEMI,   ";")); i++; continue; }
 
       throw new RuntimeException("Unexpected character '" + c + "' at position " + i);
     }
 
-    tokens.add(new Token(TokenType.EOF, ""));
-    return tokens;
+    tok.add(new Token(TokenType.EOF, ""));
+    return tok;
   }
 
-  // ===== Parser =====
+  // ===== Part C: Parser =====
   static class Parser {
     final List<Token> tokens;
     int pos = 0;
@@ -242,19 +249,120 @@ public class MiniSqlParser {
     }
 
     QueryNode parseQuery() {
-      // TODO: implement using grammar
-      return null;
+      expect(TokenType.SELECT, "SELECT");
+      AstNode selectList = parseSelectList();
+      expect(TokenType.FROM, "FROM");
+      AstNode fromList = parseFromList();
+
+      AstNode where = null;
+      if (match(TokenType.WHERE)) where = parseExpr();
+      match(TokenType.SEMI);
+      expect(TokenType.EOF, "end of input");
+      return new QueryNode(selectList, fromList, where);
     }
 
-    // TODO: parseSelectList, parseFromList, parseExpr, parseOr, parseAnd, parseNot, parsePrimary, parsePredicate, parseAttribute, parseLiteral
+    SelectListNode parseSelectList() {
+      if (match(TokenType.STAR)) return new SelectListNode(true, new ArrayList<>());
+      List<AstNode> res = new ArrayList<>();
+      res.add(parseAttribute());
+      while (match(TokenType.COMMA)) res.add(parseAttribute());
+      return new SelectListNode(false, res);
+    }
+
+    FromListNode parseFromList() {
+      List<AstNode> res = new ArrayList<>();
+      do {
+        res.add(parseTableRef());
+      } while (match(TokenType.COMMA));
+      return new FromListNode(res);
+    }
+
+    // alias is optional; since keywords aren't IDENT type, this won't accidentally grab WHERE etc.
+    AstNode parseTableRef() {
+      Token name = expect(TokenType.IDENT, "table name");
+      String alias = (peek().type == TokenType.IDENT) ? tokens.get(pos++).lexeme : null;
+      return new TableNode(name.lexeme, alias);
+    }
+
+    AstNode parseExpr() { return parseOr(); }
+
+    // OR is lowest precedence so it's outermost
+    AstNode parseOr() {
+      AstNode left = parseAnd();
+      while (match(TokenType.OR)) left = new OrNode(left, parseAnd());
+      return left;
+    }
+
+    AstNode parseAnd() {
+      AstNode left = parseNot();
+      while (match(TokenType.AND)) left = new AndNode(left, parseNot());
+      return left;
+    }
+
+    // this was wrong before, needed to recurse so NOT NOT x works
+    AstNode parseNot() {
+      if (match(TokenType.NOT)) return new NotNode(parseNot());
+      return parsePrimary();
+    }
+
+    AstNode parsePrimary() {
+      if (match(TokenType.LPAREN)) {
+        AstNode expr = parseExpr();
+        expect(TokenType.RPAREN, ")");
+        return expr;
+      }
+      return parsePredicate();
+    }
+
+    AstNode parsePredicate() {
+      AstNode attr = parseAttribute();
+      // BETWEEN needs to consume AND itself before parseAnd() sees it
+      boolean hasBetween = match(TokenType.BETWEEN);
+      if (hasBetween) {
+        AstNode low = parseLiteral();
+        expect(TokenType.AND, "AND");
+        AstNode high = parseLiteral();
+        return new BetweenNode(attr, low, high);
+      }
+      TokenType nextType = peek().type;
+      if (isCmpOp(nextType)) {
+        String op = tokens.get(pos++).lexeme;
+        boolean isLiteral = peek().type == TokenType.NUMBER || peek().type == TokenType.STRING;
+        AstNode right = isLiteral ? parseLiteral() : parseAttribute();
+        return new CompareNode(op, attr, right);
+      }
+      throw new RuntimeException("Expected comparison operator or BETWEEN but got " + peek());
+    }
+
+    boolean isCmpOp(TokenType t) {
+      return t == TokenType.EQ || t == TokenType.NE
+          || t == TokenType.LT || t == TokenType.LE
+          || t == TokenType.GT || t == TokenType.GE;
+    }
+
+    AttrNode parseAttribute() {
+      Token first = expect(TokenType.IDENT, "identifier");
+      if (match(TokenType.DOT)) {
+        Token field = expect(TokenType.IDENT, "field name after '.'");
+        return new AttrNode(first.lexeme, field.lexeme);
+      }
+      return new AttrNode(null, first.lexeme);
+    }
+
+    AstNode parseLiteral() {
+      if (peek().type == TokenType.NUMBER) return new NumberNode(tokens.get(pos++).lexeme);
+      if (peek().type == TokenType.STRING) return new StringNode(tokens.get(pos++).lexeme);
+      throw new RuntimeException("Expected number or string literal but got " + peek());
+    }
   }
 
   public static void main(String[] args) {
-    String sql = """
-      SELECT *
-      FROM student s
-      WHERE (gpa >= 3.5 AND name = 'it''s ok') OR NOT (gpa < .5);
-      """;
+    // test query 4 — most complex case
+    String sql = "SELECT * FROM student s WHERE (gpa >= 3.5 AND name = 'it''s ok') OR NOT (gpa < .5);";
+    //String sql = "SELECT name, gpa FROM student WHERE gpa >= 3.5;";
+    //String sql = "SELECT E.name, D.dname FROM Employee E, Dept D WHERE E.dept_id = D.dept_id AND E.salary BETWEEN 100000 AND 150000;";
+    //String sql = "SELECT * FROM student;";
+    System.out.println("input: " + sql);
     List<Token> toks = tokenize(sql);
     Parser p = new Parser(toks);
     QueryNode q = p.parseQuery();
